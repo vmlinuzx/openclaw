@@ -46,7 +46,14 @@ export function resolveExtraParams(params: {
 }): Record<string, unknown> | undefined {
   const modelKey = `${params.provider}/${params.modelId}`;
   const modelConfig = params.cfg?.agents?.defaults?.models?.[modelKey];
-  const globalParams = modelConfig?.params ? { ...modelConfig.params } : undefined;
+  const globalParams =
+    modelConfig?.params || modelConfig?.streaming !== undefined
+      ? { ...(modelConfig?.params ?? {}) }
+      : undefined;
+  // Honour top-level `streaming` config while preserving agent-level overrides.
+  if (globalParams && modelConfig?.streaming !== undefined) {
+    globalParams.streaming = modelConfig.streaming;
+  }
   const agentParams =
     params.agentId && params.cfg?.agents?.list
       ? params.cfg.agents.list.find((agent) => agent.id === params.agentId)?.params

@@ -41,6 +41,33 @@ describe("resolveExtraParams", () => {
     });
   });
 
+  it("includes top-level model streaming config in resolved params", () => {
+    const result = resolveExtraParams({
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "ollama/llama3.3": {
+                params: {
+                  temperature: 0.2,
+                  streaming: true,
+                },
+                streaming: false,
+              },
+            },
+          },
+        },
+      },
+      provider: "ollama",
+      modelId: "llama3.3",
+    });
+
+    expect(result).toEqual({
+      temperature: 0.2,
+      streaming: false,
+    });
+  });
+
   it("ignores unrelated model entries", () => {
     const result = resolveExtraParams({
       cfg: {
