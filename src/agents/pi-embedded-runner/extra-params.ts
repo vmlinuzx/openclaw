@@ -22,7 +22,12 @@ export function resolveExtraParams(params: {
 }): Record<string, unknown> | undefined {
   const modelKey = `${params.provider}/${params.modelId}`;
   const modelConfig = params.cfg?.agents?.defaults?.models?.[modelKey];
-  return modelConfig?.params ? { ...modelConfig.params } : undefined;
+  const result = modelConfig?.params ? { ...modelConfig.params } : {};
+  // Honour top-level `streaming` config (overrides params.streaming if both set)
+  if (modelConfig?.streaming !== undefined) {
+    result.streaming = modelConfig.streaming;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 type CacheRetention = "none" | "short" | "long";
