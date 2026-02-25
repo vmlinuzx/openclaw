@@ -80,6 +80,18 @@ const OLLAMA_DEFAULT_COST = {
   cacheWrite: 0,
 };
 
+const ATHENA_BASE_URL = "http://athena:8081/v1";
+const ATHENA_MODEL_ID = "Qwen_Qwen3.5-35B-A3B-Q6_K";
+const ATHENA_DEFAULT_CONTEXT_WINDOW = 32768;
+const ATHENA_DEFAULT_MAX_TOKENS = 8192;
+const ATHENA_DEFAULT_COST = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+const ATHENA_DEFAULT_API_KEY = "athena-local";
+
 export const QIANFAN_BASE_URL = "https://qianfan.baidubce.com/v2";
 export const QIANFAN_DEFAULT_MODEL_ID = "deepseek-v3.2";
 const QIANFAN_DEFAULT_CONTEXT_WINDOW = 98304;
@@ -378,6 +390,27 @@ function buildSyntheticProvider(): ProviderConfig {
   };
 }
 
+function buildAthenaProvider(params?: { baseUrl?: string; apiKey?: string }): ProviderConfig {
+  const baseUrl = params?.baseUrl?.trim() || ATHENA_BASE_URL;
+  const apiKey = params?.apiKey?.trim() || ATHENA_DEFAULT_API_KEY;
+  return {
+    baseUrl,
+    api: "openai-responses",
+    apiKey,
+    models: [
+      {
+        id: ATHENA_MODEL_ID,
+        name: "Qwen 3.5 35B A3B Q6_K (athena)",
+        reasoning: false,
+        input: ["text"],
+        cost: ATHENA_DEFAULT_COST,
+        contextWindow: ATHENA_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: ATHENA_DEFAULT_MAX_TOKENS,
+      },
+    ],
+  };
+}
+
 export function buildXiaomiProvider(): ProviderConfig {
   return {
     baseUrl: XIAOMI_BASE_URL,
@@ -448,6 +481,18 @@ export async function resolveImplicitProviders(params: {
   const authStore = ensureAuthProfileStore(params.agentDir, {
     allowKeychainPrompt: false,
   });
+
+  const athenaBaseUrl = process.env.ATHENA_BASE_URL?.trim();
+  const athenaApiKey =
+    resolveEnvApiKeyVarName("athena") ??
+    resolveApiKeyFromProfiles({ provider: "athena", store: authStore }) ??
+    process.env.ATHENA_API_KEY;
+  const athenaEnabled = Boolean(
+    process.env.ATHENA_ENABLE?.trim() || athenaBaseUrl || athenaApiKey,
+  );
+  if (athenaEnabled) {
+    providers.athena = buildAthenaProvider({ baseUrl: athenaBaseUrl, apiKey: athenaApiKey });
+  }
 
   const minimaxKey =
     resolveEnvApiKeyVarName("minimax") ??
