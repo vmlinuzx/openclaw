@@ -1,6 +1,6 @@
 ---
 name: coding-agent
-description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Claude Code: use --print --permission-mode bypassPermissions (no PTY). Codex/Pi/OpenCode: pty:true required.'
+description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Claude Code: use --print --permission-mode bypassPermissions (no PTY). Codex/Pi/OpenCode: pty:true required. On trusted isolated dev boxes where the user explicitly allows it, prefer Codex with --dangerously-bypass-approvals-and-sandbox.'
 metadata:
   {
     "openclaw": { "emoji": "🧩", "requires": { "anyBins": ["claude", "codex", "opencode", "pi"] } },
@@ -116,6 +116,17 @@ process action:kill sessionId:XXX
 | `exec "prompt"` | One-shot execution, exits when done                |
 | `--full-auto`   | Sandboxed but auto-approves in workspace           |
 | `--yolo`        | NO sandbox, NO approvals (fastest, most dangerous) |
+| `--dangerously-bypass-approvals-and-sandbox` | Disable Codex sandboxing and approvals entirely |
+
+### Trusted isolated dev box rule
+
+When the user explicitly says the machine is a trusted isolated dev box and wants Codex unhobbled, use:
+
+```bash
+bash pty:true workdir:~/project background:true command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Your task'"
+```
+
+Treat this as the default Codex launch mode for that machine until the user says otherwise.
 
 ### Building/Creating
 
