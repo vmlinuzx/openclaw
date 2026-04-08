@@ -390,6 +390,48 @@ describe("runGatewayUpdate", () => {
     return { calls, runCommand };
   };
 
+  const createGlobalRollbackHarness = (params: {
+    pkgRoot: string;
+    nodeModules: string;
+    initialExitCode: number | null;
+    initialStderr?: string;
+    onInitialInstall?: () => Promise<void>;
+    onRollbackInstall?: () => Promise<void>;
+  }) => {
+    const calls: string[] = [];
+    const updateCommand = "npm i -g openclaw@latest --no-fund --no-audit --loglevel=error";
+    const rollbackCommand = "npm i -g openclaw@1.0.0 --no-fund --no-audit --loglevel=error";
+
+    const runCommand = async (argv: string[]) => {
+      const key = argv.join(" ");
+      calls.push(key);
+      if (key === `git -C ${params.pkgRoot} rev-parse --show-toplevel`) {
+        return { stdout: "", stderr: "not a git repository", code: 128 };
+      }
+      if (key === "npm root -g") {
+        return { stdout: params.nodeModules, stderr: "", code: 0 };
+      }
+      if (key === "pnpm root -g") {
+        return { stdout: "", stderr: "", code: 1 };
+      }
+      if (key === updateCommand) {
+        await params.onInitialInstall?.();
+        return {
+          stdout: "",
+          stderr: params.initialStderr ?? "",
+          code: params.initialExitCode,
+        };
+      }
+      if (key === rollbackCommand) {
+        await params.onRollbackInstall?.();
+        return { stdout: "rolled back", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    return { calls, runCommand, updateCommand, rollbackCommand };
+  };
+
   it.each([
     {
       title: "updates global npm installs when detected",
@@ -475,6 +517,69 @@ describe("runGatewayUpdate", () => {
       "global update",
       "global update (omit optional)",
     ]);
+  });
+
+  it("rolls back global npm update when a failed install deletes the package root", async () => {
+    const nodeModules = path.join(tempDir, "node_modules");
+    const pkgRoot = path.join(nodeModules, "openclaw");
+    await seedGlobalPackageRoot(pkgRoot);
+
+    const { calls, runCommand, updateCommand, rollbackCommand } = createGlobalRollbackHarness({
+      pkgRoot,
+      nodeModules,
+      initialExitCode: 1,
+      initialStderr: "boom",
+      onInitialInstall: async () => {
+        await fs.rm(pkgRoot, { recursive: true, force: true });
+      },
+      onRollbackInstall: async () => {
+        await seedGlobalPackageRoot(pkgRoot, "1.0.0");
+      },
+    });
+
+    const result = await runWithCommand(runCommand, { cwd: pkgRoot });
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("update-reverted");
+    expect(result.before?.version).toBe("1.0.0");
+    expect(result.after?.version).toBe("1.0.0");
+    expect(result.root).toBe(pkgRoot);
+    expect(calls).toContain(updateCommand);
+    expect(calls).toContain(rollbackCommand);
+    expect(result.steps.map((step) => step.name)).toEqual([
+      "global update",
+      "global update (omit optional)",
+      "global rollback",
+    ]);
+  });
+
+  it("rolls back global npm update when install exits zero but leaves no package behind", async () => {
+    const nodeModules = path.join(tempDir, "node_modules");
+    const pkgRoot = path.join(nodeModules, "openclaw");
+    await seedGlobalPackageRoot(pkgRoot);
+
+    const { calls, runCommand, updateCommand, rollbackCommand } = createGlobalRollbackHarness({
+      pkgRoot,
+      nodeModules,
+      initialExitCode: 0,
+      onInitialInstall: async () => {
+        await fs.rm(pkgRoot, { recursive: true, force: true });
+      },
+      onRollbackInstall: async () => {
+        await seedGlobalPackageRoot(pkgRoot, "1.0.0");
+      },
+    });
+
+    const result = await runWithCommand(runCommand, { cwd: pkgRoot });
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("update-reverted");
+    expect(result.before?.version).toBe("1.0.0");
+    expect(result.after?.version).toBe("1.0.0");
+    expect(result.root).toBe(pkgRoot);
+    expect(calls).toContain(updateCommand);
+    expect(calls).toContain(rollbackCommand);
+    expect(result.steps.map((step) => step.name)).toEqual(["global update", "global rollback"]);
   });
 
   it("updates global bun installs when detected", async () => {

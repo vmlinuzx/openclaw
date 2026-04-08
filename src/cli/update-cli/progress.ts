@@ -29,6 +29,8 @@ const STEP_LABELS: Record<string, string> = {
   "git rev-parse HEAD (after)": "Verifying update",
   "global update": "Updating via package manager",
   "global update (omit optional)": "Retrying update without optional deps",
+  "global rollback": "Restoring previous package version",
+  "global rollback (omit optional)": "Retrying restore without optional deps",
   "global install": "Installing global package",
 };
 

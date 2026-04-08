@@ -27,6 +27,7 @@ import {
   cleanupGlobalRenameDirs,
   globalInstallArgs,
   resolveGlobalPackageRoot,
+  resolveGlobalPackageRootByName,
 } from "../../infra/update-global.js";
 import { runGatewayUpdate, type UpdateRunResult } from "../../infra/update-runner.js";
 import { syncPluginsForUpdateChannel, updateNpmInstalledPlugins } from "../../plugins/update.js";
@@ -271,12 +272,44 @@ async function runPackageInstallUpdate(params: {
   });
   const runCommand = createGlobalCommandRunner();
 
+  const runGlobalInstallSequence = async (
+    spec: string,
+    cwd: string,
+    stepName = "global update",
+  ) => {
+    const updateStep = await runUpdateStep({
+      name: stepName,
+      argv: globalInstallArgs(manager, spec),
+      cwd,
+      timeoutMs: params.timeoutMs,
+      progress: params.progress,
+    });
+    return {
+      steps: [updateStep],
+      finalStep: updateStep,
+    };
+  };
+
+  const resolveInstalledState = async (packageName: string) => {
+    const root = await resolveGlobalPackageRootByName(
+      manager,
+      runCommand,
+      params.timeoutMs,
+      packageName,
+    );
+    return {
+      root,
+      version: root ? await readPackageVersion(root) : null,
+    };
+  };
+
   const pkgRoot = await resolveGlobalPackageRoot(manager, runCommand, params.timeoutMs);
   const packageName =
     (pkgRoot ? await readPackageName(pkgRoot) : await readPackageName(params.root)) ??
     DEFAULT_PACKAGE_NAME;
 
   const beforeVersion = pkgRoot ? await readPackageVersion(pkgRoot) : null;
+  const globalRoot = pkgRoot ? path.dirname(pkgRoot) : null;
   if (pkgRoot) {
     await cleanupGlobalRenameDirs({
       globalRoot: path.dirname(pkgRoot),
@@ -284,19 +317,46 @@ async function runPackageInstallUpdate(params: {
     });
   }
 
-  const updateStep = await runUpdateStep({
-    name: "global update",
-    argv: globalInstallArgs(manager, `${packageName}@${params.tag}`),
-    timeoutMs: params.timeoutMs,
-    progress: params.progress,
-  });
+  const installAttempt = await runGlobalInstallSequence(
+    `${packageName}@${params.tag}`,
+    pkgRoot ?? params.root,
+  );
+  const steps = [...installAttempt.steps];
+  const installedState = await resolveInstalledState(packageName);
+  const updateApplied =
+    installAttempt.finalStep.exitCode === 0 &&
+    Boolean(installedState.root) &&
+    Boolean(installedState.version);
 
-  const steps = [updateStep];
-  let afterVersion = beforeVersion;
+  let resultRoot = installedState.root ?? pkgRoot ?? params.root;
+  let afterVersion = installedState.version ?? beforeVersion;
+  let reason: string | undefined = updateApplied ? undefined : installAttempt.finalStep.name;
 
-  if (pkgRoot) {
-    afterVersion = await readPackageVersion(pkgRoot);
-    const entryPath = path.join(pkgRoot, "dist", "entry.js");
+  if (!updateApplied && beforeVersion && globalRoot) {
+    await cleanupGlobalRenameDirs({
+      globalRoot,
+      packageName,
+    });
+    const recoveryAttempt = await runGlobalInstallSequence(
+      `${packageName}@${beforeVersion}`,
+      globalRoot,
+      "global rollback",
+    );
+    steps.push(...recoveryAttempt.steps);
+
+    const recoveredState = await resolveInstalledState(packageName);
+    if (recoveredState.root) {
+      resultRoot = recoveredState.root;
+    }
+    afterVersion = recoveredState.version;
+    reason =
+      recoveryAttempt.finalStep.exitCode === 0 && recoveredState.version === beforeVersion
+        ? "update-reverted"
+        : recoveryAttempt.finalStep.name;
+  }
+
+  if (updateApplied && installedState.root) {
+    const entryPath = path.join(installedState.root, "dist", "entry.js");
     if (await pathExists(entryPath)) {
       const doctorStep = await runUpdateStep({
         name: `${CLI_NAME} doctor`,
@@ -305,15 +365,18 @@ async function runPackageInstallUpdate(params: {
         progress: params.progress,
       });
       steps.push(doctorStep);
+      if (doctorStep.exitCode !== 0) {
+        reason = doctorStep.name;
+      }
     }
   }
 
   const failedStep = steps.find((step) => step.exitCode !== 0);
   return {
-    status: failedStep ? "error" : "ok",
+    status: updateApplied && !failedStep ? "ok" : "error",
     mode: manager,
-    root: pkgRoot ?? params.root,
-    reason: failedStep ? failedStep.name : undefined,
+    root: resultRoot,
+    reason: failedStep ? failedStep.name : reason,
     before: { version: beforeVersion },
     after: { version: afterVersion },
     steps,

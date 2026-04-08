@@ -25,6 +25,7 @@ import {
   detectGlobalInstallManagerForRoot,
   globalInstallArgs,
   globalInstallFallbackArgs,
+  resolveGlobalPackageRootByName,
 } from "./update-global.js";
 
 export type UpdateStepResult = {
@@ -315,6 +316,67 @@ function managerInstallArgs(manager: "pnpm" | "bun" | "npm") {
 
 function normalizeTag(tag?: string) {
   return normalizePackageTagInput(tag, ["openclaw", DEFAULT_PACKAGE_NAME]) ?? "latest";
+}
+
+async function runGlobalInstallStepSequence(params: {
+  manager: "pnpm" | "bun" | "npm";
+  spec: string;
+  cwd: string;
+  runCommand: CommandRunner;
+  timeoutMs: number;
+  progress?: UpdateStepProgress;
+  stepName?: string;
+  fallbackStepName?: string;
+}): Promise<{ steps: UpdateStepResult[]; finalStep: UpdateStepResult }> {
+  const steps: UpdateStepResult[] = [];
+  const updateStep = await runStep({
+    runCommand: params.runCommand,
+    name: params.stepName ?? "global update",
+    argv: globalInstallArgs(params.manager, params.spec),
+    cwd: params.cwd,
+    timeoutMs: params.timeoutMs,
+    progress: params.progress,
+    stepIndex: 0,
+    totalSteps: 1,
+  });
+  steps.push(updateStep);
+
+  let finalStep = updateStep;
+  if (updateStep.exitCode !== 0) {
+    const fallbackArgv = globalInstallFallbackArgs(params.manager, params.spec);
+    if (fallbackArgv) {
+      const fallbackStep = await runStep({
+        runCommand: params.runCommand,
+        name: params.fallbackStepName ?? "global update (omit optional)",
+        argv: fallbackArgv,
+        cwd: params.cwd,
+        timeoutMs: params.timeoutMs,
+        progress: params.progress,
+        stepIndex: 0,
+        totalSteps: 1,
+      });
+      steps.push(fallbackStep);
+      finalStep = fallbackStep;
+    }
+  }
+
+  return { steps, finalStep };
+}
+
+async function resolveInstalledGlobalPackageState(params: {
+  manager: "pnpm" | "bun" | "npm";
+  runCommand: CommandRunner;
+  timeoutMs: number;
+  packageName: string;
+}): Promise<{ root: string | null; version: string | null }> {
+  const root = await resolveGlobalPackageRootByName(
+    params.manager,
+    params.runCommand,
+    params.timeoutMs,
+    params.packageName,
+  );
+  const version = root ? await readPackageVersion(root) : null;
+  return { root, version };
 }
 
 export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<UpdateRunResult> {
@@ -862,51 +924,77 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
   const globalManager = await detectGlobalInstallManagerForRoot(runCommand, pkgRoot, timeoutMs);
   if (globalManager) {
     const packageName = (await readPackageName(pkgRoot)) ?? DEFAULT_PACKAGE_NAME;
+    const globalRoot = path.dirname(pkgRoot);
     await cleanupGlobalRenameDirs({
-      globalRoot: path.dirname(pkgRoot),
+      globalRoot,
       packageName,
     });
     const channel = opts.channel ?? DEFAULT_PACKAGE_CHANNEL;
     const tag = normalizeTag(opts.tag ?? channelToNpmTag(channel));
     const spec = `${packageName}@${tag}`;
-    const steps: UpdateStepResult[] = [];
-    const updateStep = await runStep({
-      runCommand,
-      name: "global update",
-      argv: globalInstallArgs(globalManager, spec),
+    const installAttempt = await runGlobalInstallStepSequence({
+      manager: globalManager,
+      spec,
       cwd: pkgRoot,
+      runCommand,
       timeoutMs,
       progress,
-      stepIndex: 0,
-      totalSteps: 1,
     });
-    steps.push(updateStep);
+    const steps: UpdateStepResult[] = [...installAttempt.steps];
+    const installedState = await resolveInstalledGlobalPackageState({
+      manager: globalManager,
+      runCommand,
+      timeoutMs,
+      packageName,
+    });
 
-    let finalStep = updateStep;
-    if (updateStep.exitCode !== 0) {
-      const fallbackArgv = globalInstallFallbackArgs(globalManager, spec);
-      if (fallbackArgv) {
-        const fallbackStep = await runStep({
-          runCommand,
-          name: "global update (omit optional)",
-          argv: fallbackArgv,
-          cwd: pkgRoot,
-          timeoutMs,
-          progress,
-          stepIndex: 0,
-          totalSteps: 1,
-        });
-        steps.push(fallbackStep);
-        finalStep = fallbackStep;
+    const updateApplied =
+      installAttempt.finalStep.exitCode === 0 &&
+      Boolean(installedState.root) &&
+      Boolean(installedState.version);
+
+    let reason: string | undefined = updateApplied ? undefined : installAttempt.finalStep.name;
+    let finalRoot = installedState.root ?? pkgRoot;
+    let afterVersion = installedState.version;
+
+    if (!updateApplied && beforeVersion) {
+      await cleanupGlobalRenameDirs({
+        globalRoot,
+        packageName,
+      });
+      const recoveryAttempt = await runGlobalInstallStepSequence({
+        manager: globalManager,
+        spec: `${packageName}@${beforeVersion}`,
+        cwd: globalRoot,
+        runCommand,
+        timeoutMs,
+        progress,
+        stepName: "global rollback",
+        fallbackStepName: "global rollback (omit optional)",
+      });
+      steps.push(...recoveryAttempt.steps);
+
+      const recoveredState = await resolveInstalledGlobalPackageState({
+        manager: globalManager,
+        runCommand,
+        timeoutMs,
+        packageName,
+      });
+      if (recoveredState.root) {
+        finalRoot = recoveredState.root;
       }
+      afterVersion = recoveredState.version;
+      reason =
+        recoveryAttempt.finalStep.exitCode === 0 && recoveredState.version === beforeVersion
+          ? "update-reverted"
+          : recoveryAttempt.finalStep.name;
     }
 
-    const afterVersion = await readPackageVersion(pkgRoot);
     return {
-      status: finalStep.exitCode === 0 ? "ok" : "error",
+      status: updateApplied ? "ok" : "error",
       mode: globalManager,
-      root: pkgRoot,
-      reason: finalStep.exitCode === 0 ? undefined : finalStep.name,
+      root: finalRoot,
+      reason,
       before: { version: beforeVersion },
       after: { version: afterVersion },
       steps,

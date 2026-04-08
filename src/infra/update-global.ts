@@ -54,11 +54,20 @@ export async function resolveGlobalPackageRoot(
   runCommand: CommandRunner,
   timeoutMs: number,
 ): Promise<string | null> {
+  return await resolveGlobalPackageRootByName(manager, runCommand, timeoutMs, PRIMARY_PACKAGE_NAME);
+}
+
+export async function resolveGlobalPackageRootByName(
+  manager: GlobalInstallManager,
+  runCommand: CommandRunner,
+  timeoutMs: number,
+  packageName: string,
+): Promise<string | null> {
   const root = await resolveGlobalRoot(manager, runCommand, timeoutMs);
   if (!root) {
     return null;
   }
-  return path.join(root, PRIMARY_PACKAGE_NAME);
+  return path.join(root, packageName);
 }
 
 export async function detectGlobalInstallManagerForRoot(
